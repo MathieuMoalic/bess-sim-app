@@ -62,6 +62,60 @@ uv run streamlit run app.py
 
 All recipes run through `nix develop -c`, so `uv` is always available.
 
+## Deploy on a NixOS homeserver (behind Caddy)
+
+The flake exposes `nixosModules.bess-sim-service` — a systemd service
+(`services.bess-sim`) that runs the dashboard as a dedicated system user
+with hardened unit settings, and optionally wires the Caddy reverse proxy.
+
+pybamm is not in nixpkgs (it ships compiled solver wheels), so the service
+materializes the **exact `uv.lock`-pinned environment** (pybamm 26.10) into
+`/var/lib/bess-sim/.venv` via `uv` on first start — it needs the network
+once, then restarts are offline-instant.
+
+On the homeserver's flake:
+
+```nix
+{
+  inputs.bess-sim-app.url = "git+file:///home/mat/projects/bess-sim-app";
+  # or, after pushing: "github:MathieuMoalic/bess-sim-app";
+
+  outputs = {nixpkgs, bess-sim-app, ...}: {
+    nixosConfigurations.myhost = nixpkgs.lib.nixosSystem {
+      system = "x86_64-linux";
+      modules = [
+        bess-sim-app.nixosModules.bess-sim-service
+        # ready-made host wiring (URL, port, groups, home mode):
+        # (import /home/mat/projects/bess-sim-app/homeserver.nix)
+        # …or configure inline:
+        {
+          services.bess-sim = {
+            enable = true;
+            port = 8600;                    # loopback; Caddy terminates TLS
+            domain = "bess.example.com";    # creates the Caddy vhost
+          };
+          services.caddy.enable = true;     # + your ACME email config
+        }
+        # ...
+      ];
+    };
+  };
+}
+```
+
+`homeserver.nix` in this repo is the full wiring module with every option
+exercised (URL, port, `extraGroups`, `homeMode`, `domain`, comments on
+`source`/`openFirewall`) — copy it into the homeserver flake as its
+`nixosModules.bess-sim` and import it.
+
+Options: `enable`, `port` (8600), `bindAddress` (127.0.0.1), `domain`
+(null → no Caddy vhost), `openFirewall` (false), `source` (defaults to this
+flake's app files, filtered to `*.py` + lockfile).
+
+First start takes a couple of minutes (Python + wheels download); watch it
+with `journalctl -u bess-sim -f`. Streamlit's websocket live-updates work
+through Caddy's `reverse_proxy` out of the box.
+
 ## Repository layout
 
 ```text
